@@ -1,7 +1,7 @@
 # OpenClaw Deployment Guide
 ## Secure Setup on a Dedicated Mac mini
 
-**Version:** 1.5  
+**Version:** 1.6  
 **Date:** February 2026  
 **Audience:** Semi-technical users setting up a personal AI assistant
 
@@ -2025,6 +2025,226 @@ rm -rf ~/.openclaw/agents/*/sessions/*
 3. Restore from known-good backup if needed
 4. Re-enable with fresh credentials
 5. Document lessons learned
+
+---
+
+## Advanced: Password Vault Integration
+
+For advanced automation, you may want your AI to securely access credentials from a password vault. This enables scenarios like:
+
+- Logging into services to perform tasks
+- Retrieving API keys for integrations
+- Accessing SSH credentials for server management
+- Database connections for queries
+
+> **⚠️ Security Warning:** Giving an AI access to credentials significantly increases risk. Implement strict controls, audit logging, and limit scope. This is for advanced users who understand the implications.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Credential Flow (Just-in-Time)                    │
+│                                                                      │
+│  ┌─────────────┐     ┌─────────────────┐     ┌─────────────────┐  │
+│  │  OpenClaw   │────►│  Vault CLI      │────►│  Password Vault │  │
+│  │  (requests  │     │  (op/bw/pass)   │     │  (1Password,    │  │
+│  │  credential)│     │                 │     │   Bitwarden)    │  │
+│  └─────────────┘     └─────────────────┘     └─────────────────┘  │
+│         │                    │                        │            │
+│         │                    │ Auth (biometric/       │            │
+│         │                    │ session token)         │            │
+│         │                    ▼                        │            │
+│         │           ┌─────────────────┐               │            │
+│         │◄──────────│  Credential     │◄──────────────┘            │
+│         │           │  (short-lived)  │                            │
+│         ▼           └─────────────────┘                            │
+│  ┌─────────────┐                                                   │
+│  │  Use cred   │    Credential discarded after use                 │
+│  │  for task   │    Audit trail in vault logs                      │
+│  └─────────────┘                                                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Supported Password Managers
+
+| Manager | CLI Tool | Auth Methods | Notes |
+|---------|----------|--------------|-------|
+| **1Password** | `op` | Biometric, service account, session token | Best CLI experience, service accounts for automation |
+| **Bitwarden** | `bw` | Master password, API key | Self-hostable, open source |
+| **KeePassXC** | `keepassxc-cli` | Password, key file | Local-only, no cloud sync |
+| **Pass** | `pass` | GPG key | Unix philosophy, git-backed |
+| **HashiCorp Vault** | `vault` | Many (tokens, AppRole, etc.) | Enterprise-grade, complex setup |
+
+### Implementation: 1Password CLI Example
+
+**1. Install and configure 1Password CLI:**
+
+```bash
+# macOS
+brew install 1password-cli
+
+# Authenticate (creates session)
+eval $(op signin)
+
+# Or use service account (recommended for automation)
+export OP_SERVICE_ACCOUNT_TOKEN="your-service-account-token"
+```
+
+**2. Create a dedicated vault for AI-accessible credentials:**
+
+In 1Password, create a vault named "AI Automation" with only the credentials the AI should access. Never give access to your primary vault.
+
+**3. Create an OpenClaw skill for vault access:**
+
+Create `~/.openclaw/workspace/skills/vault/SKILL.md`:
+
+```markdown
+# Vault Access Skill
+
+## Usage
+When you need a credential, use the 1Password CLI:
+
+## Commands
+
+### Get a credential by name
+\`\`\`bash
+op item get "Service Name" --vault "AI Automation" --fields password
+\`\`\`
+
+### Get specific field
+\`\`\`bash
+op item get "AWS Prod" --vault "AI Automation" --fields "access_key_id"
+\`\`\`
+
+### List available items (no secrets shown)
+\`\`\`bash
+op item list --vault "AI Automation" --format json
+\`\`\`
+
+## Rules
+- ONLY access items in "AI Automation" vault
+- NEVER store credentials in files or memory
+- NEVER echo credentials to chat
+- Use credentials immediately, then discard
+- Log what you accessed and why
+```
+
+**4. Configure service account (recommended for automation):**
+
+```bash
+# Create service account in 1Password admin console
+# Grant read-only access to "AI Automation" vault only
+# Set token in environment
+
+# In ~/.openclaw/.env
+OP_SERVICE_ACCOUNT_TOKEN=ops_xxxxxxxxxxxxx
+```
+
+### Implementation: Bitwarden CLI Example
+
+```bash
+# Install
+brew install bitwarden-cli
+
+# Login and unlock
+bw login
+export BW_SESSION=$(bw unlock --raw)
+
+# Get credential
+bw get password "Service Name"
+
+# Get specific field
+bw get item "AWS" | jq -r '.fields[] | select(.name=="access_key_id") | .value'
+```
+
+### Security Controls
+
+**Principle of Least Privilege:**
+
+| Control | Implementation |
+|---------|----------------|
+| Separate vault | AI only accesses dedicated "AI Automation" vault |
+| Read-only | Service account has no write/delete permissions |
+| Scoped credentials | Credentials have minimal required permissions |
+| Short-lived tokens | Use temporary credentials where possible (AWS STS, etc.) |
+
+**Audit Trail:**
+
+```bash
+# 1Password audit log shows:
+# - What was accessed
+# - When
+# - By which service account
+# - From which IP
+
+# View in 1Password Business admin console or export
+```
+
+**Session Management:**
+
+```bash
+# 1Password sessions expire after 30 minutes by default
+# For service accounts, tokens are long-lived but revocable
+
+# Bitwarden sessions should be locked when not in use
+bw lock
+```
+
+### AGENTS.md Integration
+
+Add vault rules to your AI's operating instructions:
+
+```markdown
+## Credential Access Rules
+
+### When to use vault
+- API integrations that require authentication
+- SSH connections to servers
+- Database queries
+
+### How to use vault
+1. Request only the specific credential needed
+2. Use immediately for the task
+3. Never store, log, or display credentials
+4. Document what you accessed in daily notes (item name, not value)
+
+### Never do
+- Access credentials outside "AI Automation" vault
+- Store credentials in any file
+- Include credentials in chat responses
+- Access credentials "just to check"
+
+### Always do
+- Confirm with user before accessing sensitive credentials
+- Use the most limited credential available
+- Prefer temporary/scoped credentials over permanent ones
+```
+
+### Risk Considerations
+
+| Risk | Mitigation |
+|------|------------|
+| Credential exfiltration | Audit logging, network monitoring, separate vault |
+| Prompt injection stealing creds | Use service accounts with limited scope |
+| Accidental credential exposure | Train AI to never echo credentials |
+| Unauthorized access | Require user confirmation for sensitive creds |
+| Session hijacking | Short session timeouts, IP restrictions |
+
+### When NOT to Use Vault Integration
+
+- Financial accounts (banking, trading)
+- Primary email accounts
+- Social media with posting ability
+- Any account where compromise = significant damage
+- Anything you wouldn't trust a junior employee with
+
+### Recommended Approach
+
+1. **Start without vault access** — Most tasks don't need it
+2. **Add specific credentials as needed** — One at a time, justified
+3. **Use dedicated service accounts** — Never personal credentials
+4. **Monitor and audit** — Review access logs regularly
+5. **Have a revocation plan** — Know how to quickly disable access
 
 ---
 
