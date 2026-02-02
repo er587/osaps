@@ -1,7 +1,7 @@
 # OpenClaw Deployment Guide
 ## Secure Setup on a Dedicated Mac mini
 
-**Version:** 1.4  
+**Version:** 1.5  
 **Date:** February 2026  
 **Audience:** Semi-technical users setting up a personal AI assistant
 
@@ -652,7 +652,7 @@ Control what actions your AI can take autonomously vs. with approval.
 | Read files | ✅ | — | — |
 | Write to workspace | ✅ | — | — |
 | Web search | ✅ | — | — |
-| Send messages (known contacts) | ✅ | — | — |
+| Send messages (known contacts) | — | ✅ Draft first | — |
 | Send messages (new contacts) | — | — | ✅ |
 | **Send emails** | — | ✅ Draft only | Send requires approval |
 | Social media posts | — | ✅ Draft only | Post requires approval |
@@ -708,9 +708,9 @@ Add a guardrails section to your AI's operating instructions:
 - Read files in workspace
 - Write to wiki/memory
 - Search the web
-- Message approved contacts on Telegram
 
 ### Draft-Only Actions (show me first)
+- Messages to approved contacts — draft but confirm before send
 - Email replies — draft but don't send
 - Social posts — draft but don't post
 - Any message to someone new
