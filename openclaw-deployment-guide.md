@@ -1,7 +1,7 @@
 # OpenClaw Deployment Guide
 ## Secure Setup on a Dedicated Mac mini
 
-**Version:** 1.3  
+**Version:** 1.4  
 **Date:** February 2026  
 **Audience:** Semi-technical users setting up a personal AI assistant
 
@@ -1352,6 +1352,120 @@ The OpenClaw community is exploring:
 *Security architecture contributed by Eric (a network security professional)*
 
 This appendix covers advanced security measures for deploying OpenClaw in a security-conscious environment. These recommendations go beyond basic setup and implement defense-in-depth principles.
+
+## Virtualization Considerations
+
+Some security practitioners recommend running AI workloads inside a virtual machine for additional isolation. This section explores the tradeoffs to help you make an informed decision for your environment.
+
+### The Case for VMs
+
+| Benefit | Description |
+|---------|-------------|
+| **Snapshot/rollback** | Easily restore to known-good state after incidents |
+| **Isolation** | VM escape is harder than container escape |
+| **Reproducibility** | Clone and redeploy identical environments |
+| **Resource limits** | Hard caps on CPU, RAM, disk usage |
+| **Network isolation** | Virtual NICs with strict firewall rules |
+
+### The Case Against VMs (on Dedicated Hardware)
+
+| Consideration | Description |
+|---------------|-------------|
+| **Performance overhead** | 5-15% penalty, especially for I/O-heavy workloads |
+| **Complexity** | Another layer to manage, update, and secure |
+| **Limited benefit** | On dedicated hardware with no other workloads, what are you isolating from? |
+| **Apple Silicon limitations** | macOS VMs on Apple Silicon have constraints (no nested virtualization, limited GPU passthrough) |
+| **Resource waste** | Dedicating RAM to hypervisor that could serve the workload |
+
+### Risk Assessment Framework
+
+Consider your specific situation:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Is a VM Right for Your Setup?                     │
+│                                                                      │
+│  Q1: Is this a dedicated machine for OpenClaw only?                 │
+│      YES → VM provides limited additional isolation                 │
+│      NO  → VM strongly recommended                                  │
+│                                                                      │
+│  Q2: Does the machine contain sensitive data beyond OpenClaw?       │
+│      YES → VM strongly recommended                                  │
+│      NO  → VM is optional (data created by AI is the only data)    │
+│                                                                      │
+│  Q3: Do you need snapshot/rollback capability?                      │
+│      YES → VM provides this easily                                  │
+│      NO  → Time Machine or manual backups may suffice               │
+│                                                                      │
+│  Q4: Are you comfortable with hypervisor management?                │
+│      YES → VM is a reasonable choice                                │
+│      NO  → Bare metal with good backups may be simpler              │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Virtualization Options for Mac mini
+
+**UTM (Recommended for Apple Silicon)**
+- Free, open-source
+- Based on QEMU
+- Good macOS and Linux guest support
+- https://mac.getutm.app
+
+**Parallels Desktop**
+- Commercial ($99/year)
+- Best performance on Apple Silicon
+- Seamless macOS integration
+
+**VMware Fusion**
+- Commercial (free for personal use)
+- Mature, well-supported
+
+**Docker (Containers, not VMs)**
+- Lighter weight than VMs
+- Good for isolating specific services
+- Less isolation than full VM
+
+### Recommended VM Configuration (If You Choose VM)
+
+```yaml
+# UTM or Parallels configuration
+Guest OS: Ubuntu Server 24.04 LTS (or Debian 12)
+CPUs: 4-6 cores (leave 2 for host)
+RAM: 12-14GB (leave 2-4GB for host)
+Disk: 100GB+ (dynamically allocated)
+Network: Bridged (for direct network access) or NAT with port forwarding
+```
+
+**Port forwarding (if using NAT):**
+```
+Host 18789 → Guest 18789 (OpenClaw Gateway)
+Host 2222  → Guest 22    (SSH)
+```
+
+### The Pragmatic View
+
+> **For dedicated AI machines with no pre-existing sensitive data:**
+> 
+> The primary threats are:
+> 1. AI-initiated actions (mitigated by guardrails, allowlists, monitoring)
+> 2. Network-based attacks (mitigated by VLAN isolation, firewall)
+> 3. Supply chain compromise (mitigated by keeping software updated)
+> 
+> A VM adds protection against #1 escaping to the host, but on a dedicated machine, the host has nothing else to protect. The real security value comes from network isolation and monitoring — which work equally well on bare metal.
+
+### Bottom Line
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Dedicated Mac mini, only runs OpenClaw | Bare metal is fine; focus on network isolation |
+| Shared machine with other workloads | VM strongly recommended |
+| High-security environment | VM + VLAN + SIEM (defense in depth) |
+| Want easy rollback after experiments | VM for snapshot capability |
+| Maximum performance needed | Bare metal |
+
+**The balance of risk acceptance is yours.** Both approaches are valid for dedicated systems. Document your decision and rationale.
+
+---
 
 ## Network Isolation
 
