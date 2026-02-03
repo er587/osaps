@@ -1,8 +1,9 @@
 # OpenClaw Deployment Guide
 ## Secure Setup on a Dedicated Mac mini
 
-**Version:** 1.6  
+**Version:** 1.7  
 **Date:** February 2026  
+**Changelog:** v1.7 adds account separation (admin/standard user) for defense in depth  
 **Audience:** Semi-technical users setting up a personal AI assistant
 
 ---
@@ -229,21 +230,53 @@ If you prefer pay-as-you-go or need higher limits:
 
 # Phase 2: Prepare the Mac mini
 
-### 2.1 Initial macOS Setup
+### 2.1 Account Separation (Security Best Practice)
 
-1. **Create a dedicated user account** for the AI:
-   - System Settings → Users & Groups → Add User
-   - Username: `assistant` (or your AI's name)
-   - Make it an Administrator account
+For security hardening, create **two accounts** with different privilege levels:
 
-2. **Log in as the new user** and complete setup
+| Account | Type | Purpose |
+|---------|------|---------|
+| `admin` | Administrator | Install software, system updates, maintenance |
+| `assistant` | Standard | Run OpenClaw gateway (principle of least privilege) |
 
-3. **Enable Remote Access** (optional, for headless operation):
-   - System Settings → General → Sharing
-   - Enable "Remote Login" (SSH)
-   - Enable "Screen Sharing" (VNC)
+**Why?** If the AI executes malicious commands (via prompt injection or bug), a standard account limits the blast radius. No `sudo`, no system-level changes, no Homebrew modifications.
 
-### 2.2 Install Homebrew
+#### Step 1: Create Admin Account (if not already your main account)
+
+- System Settings → Users & Groups → Add User
+- Username: `admin` (or your name)
+- Type: **Administrator**
+- Strong password, store in password manager
+
+#### Step 2: Create Standard Assistant Account
+
+- System Settings → Users & Groups → Add User
+- Username: `assistant` (or your AI's name, e.g., `juniper`)
+- Type: **Standard** (NOT Administrator)
+- Enable "Allow user to log in remotely" if using SSH
+
+#### Step 3: Enable Remote Access (optional, for headless operation)
+
+As admin:
+- System Settings → General → Sharing
+- Enable "Remote Login" (SSH) — add both `admin` and `assistant` users
+- Enable "Screen Sharing" (VNC) — optional
+
+#### Install Summary: What Needs Admin
+
+| Task | Account | Why Admin? |
+|------|---------|-----------|
+| Install Homebrew | `admin` | Writes to `/opt/homebrew` |
+| `brew install node` | `admin` | Modifies Homebrew directories |
+| `brew install claude` | `admin` | Modifies Homebrew directories |
+| `npm install -g openclaw` | `admin` | Writes to Homebrew's npm prefix |
+| System Preferences (Full Disk Access, etc.) | `admin` | Requires admin password |
+| **Run OpenClaw gateway** | `assistant` | Standard user is sufficient |
+| **Daily operation** | `assistant` | No admin needed at runtime |
+
+### 2.2 Install Homebrew (as admin)
+
+**Log in as `admin`** (or SSH: `ssh admin@your-mac-mini`).
 
 Open Terminal and run:
 
@@ -253,7 +286,7 @@ Open Terminal and run:
 
 Follow the post-install instructions to add Homebrew to your PATH.
 
-### 2.3 Install Node.js
+### 2.3 Install Node.js (as admin)
 
 ```bash
 brew install node@22
@@ -270,27 +303,48 @@ npm --version   # Should show 10.x.x
 
 # Phase 3: Install OpenClaw
 
-### 3.1 Install OpenClaw
+### 3.1 Install OpenClaw (as admin)
+
+Still logged in as `admin`:
 
 ```bash
 npm install -g openclaw
 ```
 
-### 3.2 Install and Configure Claude CLI
+### 3.2 Install and Configure Claude CLI (as admin)
 
 If using Claude Pro/Max subscription (recommended):
 
 ```bash
-# Install Claude CLI
+# Install Claude CLI (as admin)
 brew install claude
+```
 
-# Authenticate with your Claude account
+### 3.3 Switch to Assistant Account
+
+Now switch to the standard `assistant` account for all remaining setup:
+
+```bash
+# Option A: SSH into assistant account
+ssh assistant@localhost
+
+# Option B: Fast user switching in macOS
+# Or log out and log in as assistant
+
+# Option C: From admin terminal (for quick commands)
+sudo -u assistant -i
+```
+
+### 3.4 Authenticate Claude CLI (as assistant)
+
+```bash
+# As assistant user
 claude login
 ```
 
-This opens a browser to authenticate with your Claude subscription via OAuth. Once authenticated, OpenClaw can use your subscription.
+This opens a browser to authenticate with your Claude subscription via OAuth. The credentials are stored in the assistant user's home directory.
 
-### 3.3 Run the Setup Wizard
+### 3.5 Run the Setup Wizard (as assistant)
 
 ```bash
 openclaw doctor
@@ -795,9 +849,27 @@ OpenClaw runs as a background service. Normal operation requires no intervention
 
 ### Updating OpenClaw
 
+Updates require admin privileges since OpenClaw is globally installed:
+
 ```bash
+# SSH or switch to admin account
+ssh admin@your-mac-mini
+
+# Update as admin
 npm update -g openclaw
+
+# Switch back to assistant and restart gateway
+ssh assistant@your-mac-mini
 openclaw gateway restart
+```
+
+**Or from admin account directly:**
+```bash
+# Update
+npm update -g openclaw
+
+# Restart gateway as assistant user
+sudo -u assistant openclaw gateway restart
 ```
 
 ### Checking Status
@@ -840,6 +912,7 @@ Important files to back up:
 
 Before going live, verify:
 
+- [ ] **Account separation:** OpenClaw runs as standard user, not admin
 - [ ] DM policy is "pairing" (not "open")
 - [ ] Group policy is "allowlist"
 - [ ] Secrets are in `.env` file, not config
@@ -848,6 +921,8 @@ Before going live, verify:
 - [ ] Security audit passes with no criticals
 - [ ] Using Claude Opus 4.5 (best prompt injection resistance)
 - [ ] Billing alerts are set up
+- [ ] Admin account has strong, unique password
+- [ ] SSH key authentication (disable password auth for remote access)
 
 ---
 
@@ -882,6 +957,10 @@ qmd update && qmd embed
 ### File Locations
 
 ```
+# System-level (owned by admin, read by assistant)
+/opt/homebrew/lib/node_modules/openclaw/   # OpenClaw installation
+
+# User-level (owned by assistant)
 ~/.openclaw/
 ├── openclaw.json          # Main configuration
 ├── .env                   # Secrets (create this)
@@ -892,7 +971,19 @@ qmd update && qmd embed
 │   └── wiki/             # Knowledge base
 ├── credentials/           # Channel auth
 └── agents/               # Agent data
+
+~/Library/LaunchAgents/    # Gateway service (user-level, no admin needed)
 ```
+
+### Account Usage
+
+| Operation | Account |
+|-----------|---------|
+| Install/update software | `admin` |
+| Configure OpenClaw | `assistant` |
+| Run gateway | `assistant` |
+| Daily operation | `assistant` |
+| System updates (macOS) | `admin` |
 
 ---
 
