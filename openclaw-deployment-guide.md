@@ -1,9 +1,9 @@
 # OpenClaw Deployment Guide
 ## Secure Setup on a Dedicated Mac mini
 
-**Version:** 1.8  
+**Version:** 1.9  
 **Date:** February 2026  
-**Changelog:** v1.8 adds exec command audit logging with Filebeat/SIEM integration and Sigma detection rules  
+**Changelog:** v1.9 adds API key/token exposure and exfiltration detection Sigma rules  
 **Audience:** Semi-technical users setting up a personal AI assistant
 
 ---
@@ -2264,6 +2264,150 @@ tags:
     - attack.t1082
     - attack.t1083
     - attack.t1046
+```
+
+**`/opt/so/rules/sigma/openclaw-exec-audit-credential-access.yml`:**
+
+```yaml
+title: OpenClaw Credential File/Environment Access
+id: f6a7b8c9-d0e1-2345-f012-567890123456
+status: experimental
+description: Detects attempts to read API keys, tokens, or secrets from files or environment
+author: Eric (a network security professional)
+logsource:
+    product: openclaw
+    service: exec-audit
+detection:
+    selection_openclaw_secrets:
+        log_type: openclaw-exec
+        command|contains:
+            - '.openclaw/.env'
+            - '.openclaw/openclaw.json'
+            - 'ANTHROPIC_API_KEY'
+            - 'OPENAI_API_KEY'
+            - 'TELEGRAM_BOT_TOKEN'
+    selection_credential_files:
+        log_type: openclaw-exec
+        command|re: '(cat|less|more|head|tail|grep).*'
+        command|contains:
+            - '.env'
+            - '.netrc'
+            - '.aws/credentials'
+            - 'credentials.json'
+            - 'secrets.json'
+    selection_ssh_keys:
+        log_type: openclaw-exec
+        command|contains:
+            - '.ssh/id_'
+            - 'id_rsa'
+            - 'id_ed25519'
+            - '.pem'
+    selection_env_extraction:
+        log_type: openclaw-exec
+        command|re: '(env|printenv|echo \$).*'
+        command|contains:
+            - 'API'
+            - 'KEY'
+            - 'TOKEN'
+            - 'SECRET'
+    condition: 1 of selection_*
+falsepositives:
+    - Legitimate configuration management
+level: high
+tags:
+    - attack.credential_access
+    - attack.t1552.001
+```
+
+**`/opt/so/rules/sigma/openclaw-exec-audit-credential-exfil.yml`:**
+
+```yaml
+title: OpenClaw API Key/Token Exfiltration Attempt
+id: e5f6a7b8-c9d0-1234-ef01-456789012345
+status: critical
+description: Detects attempts to exfiltrate API keys or tokens via exec commands
+author: Eric (a network security professional)
+logsource:
+    product: openclaw
+    service: exec-audit
+detection:
+    selection_curl_with_secrets:
+        log_type: openclaw-exec
+        command|re: 'curl.*(API[_-]?KEY|TOKEN|SECRET).*(-d|--data|-X POST)'
+    selection_paste_services:
+        log_type: openclaw-exec
+        command|contains:
+            - 'pastebin.com'
+            - 'transfer.sh'
+            - 'file.io'
+            - '0x0.st'
+            - 'ix.io'
+    selection_webhook_exfil:
+        log_type: openclaw-exec
+        command|re: 'curl.*(webhook|discord\.com/api/webhooks|hooks\.slack\.com)'
+    selection_base64_obfuscation:
+        log_type: openclaw-exec
+        command|re: 'base64.*\|.*curl|echo.*\|.*base64.*\|.*(curl|wget)'
+    condition: 1 of selection_*
+falsepositives:
+    - Legitimate webhook integrations (allowlist)
+level: critical
+tags:
+    - attack.exfiltration
+    - attack.t1041
+    - attack.credential_access
+    - attack.t1552.001
+```
+
+**`/opt/so/rules/sigma/openclaw-exec-audit-exposed-secrets.yml`:**
+
+```yaml
+title: OpenClaw Exposed API Key/Token in Command
+id: a7b8c9d0-e1f2-3456-0123-678901234567
+status: critical
+description: Detects API keys or tokens appearing directly in exec commands
+author: Eric (a network security professional)
+logsource:
+    product: openclaw
+    service: exec-audit
+detection:
+    # Anthropic API key (sk-ant-...)
+    selection_anthropic:
+        log_type: openclaw-exec
+        command|re: 'sk-ant-[a-zA-Z0-9_-]{20,}'
+    # OpenAI API key (sk-...)
+    selection_openai:
+        log_type: openclaw-exec
+        command|re: 'sk-[a-zA-Z0-9]{32,}'
+    # GitHub tokens
+    selection_github:
+        log_type: openclaw-exec
+        command|re: '(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,})'
+    # Telegram bot token
+    selection_telegram:
+        log_type: openclaw-exec
+        command|re: '\d{8,10}:[a-zA-Z0-9_-]{35}'
+    # AWS access key
+    selection_aws:
+        log_type: openclaw-exec
+        command|re: '(AKIA|ASIA)[A-Z0-9]{16}'
+    # Stripe keys
+    selection_stripe:
+        log_type: openclaw-exec
+        command|re: '(sk_live_|sk_test_)[a-zA-Z0-9]{24,}'
+    # Generic bearer token
+    selection_bearer:
+        log_type: openclaw-exec
+        command|re: 'Bearer\s+[a-zA-Z0-9_-]{20,}'
+    condition: 1 of selection_*
+falsepositives:
+    - Testing with dummy keys
+level: critical
+tags:
+    - attack.credential_access
+    - attack.t1552
+    - attack.exfiltration
+    - attack.t1020
 ```
 
 ### Kibana Dashboard for OpenClaw
