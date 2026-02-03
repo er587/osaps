@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# exec-audit - Extract and audit exec tool calls from OpenClaw session transcripts
+# Usage: exec-audit [options]
+#
+# Options:
+#   -a, --all         Show all exec calls (default: last 24h)
+#   -d, --days N      Show exec calls from last N days
+#   -s, --session ID  Filter by session ID
+#   -c, --command PAT Filter commands matching pattern
+#   -j, --json        Output as JSON
+#   -t, --tail N      Show last N entries (default: 50)
+#   -w, --watch       Watch for new exec calls (tail -f style)
+#   -o, --output FILE Write to file instead of stdout
+#   -h, --help        Show this help
+
+set -euo pipefail
+
+SESSIONS_DIR="${OPENCLAW_SESSIONS:-$HOME/.openclaw/agents}"
+DAYS=""
+SESSION_FILTER=""
+COMMAND_FILTER=""
+JSON_OUTPUT=false
+TAIL_COUNT=50
+WATCH_MODE=false
+OUTPUT_FILE=""
+ALL_MODE=false
+
+usage() {
+    sed -n '2,14p' "$0" | sed 's/^# //'
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -a|--all) ALL_MODE=true; shift ;;
+        -d|--days) DAYS="$2"; shift 2 ;;
+        -s|--session) SESSION_FILTER="$2"; shift 2 ;;
+        -c|--command) COMMAND_FILTER="$2"; shift 2 ;;
+        -j|--json) JSON_OUTPUT=true; shift ;;
+        -t|--tail) TAIL_COUNT="$2"; shift 2 ;;
+        -w|--watch) WATCH_MODE=true; shift ;;
+        -o|--output) OUTPUT_FILE="$2"; shift 2 ;;
+        -h|--help) usage ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+# Calculate time filter
+if [[ -n "$DAYS" ]]; then
+    SINCE=$(date -v-${DAYS}d +%s 2>/dev/null || date -d "-${DAYS} days" +%s)
+elif [[ "$ALL_MODE" == "false" ]]; then
+    SINCE=$(date -v-1d +%s 2>/dev/null || date -d "-1 day" +%s)
+else
+    SINCE=0
+fi
+
+extract_exec_calls() {
+    local file="$1"
+    local session_id
+    session_id=$(basename "$file" .jsonl)
+    
+    # Extract exec tool calls from session transcript
+    grep -o '"name":"exec","arguments":{[^}]*}' "$file" 2>/dev/null | while read -r match; do
+        # Extract command from the match
+        local cmd
+        cmd=$(echo "$match" | grep -o '"command":"[^"]*"' | sed 's/"command":"//;s/"$//' | head -1)
+        
+        if [[ -z "$cmd" ]]; then
+            continue
+        fi
+        
+        # Apply command filter
+        if [[ -n "$COMMAND_FILTER" ]] && ! echo "$cmd" | grep -qE "$COMMAND_FILTER"; then
+            continue
+        fi
+        
+        # Get timestamp from the line (approximate - use file mtime if needed)
+        local timestamp
+        timestamp=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file")
+        
+        # Time filter
+        if [[ "$timestamp" -lt "$SINCE" ]]; then
+            continue
+        fi
+        
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            printf '{"session":"%s","command":"%s","timestamp":%d}\n' \
+                "$session_id" \
+                "$(echo "$cmd" | sed 's/"/\\"/g')" \
+                "$timestamp"
+        else
+            local time_str
+            time_str=$(date -r "$timestamp" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || date -d "@$timestamp" "+%Y-%m-%d %H:%M:%S")
+            printf "[%s] %s\n  └─ %s\n" "$time_str" "${session_id:0:8}..." "$cmd"
+        fi
+    done
+}
+
+# More detailed extraction using jq if available
+extract_exec_calls_jq() {
+    local file="$1"
+    local session_id
+    session_id=$(basename "$file" .jsonl)
+    
+    jq -c '
+        select(.message.content != null) |
+        .message.content[] |
+        select(.type == "toolCall" and .name == "exec") |
+        {
+            command: .arguments.command,
+            toolCallId: .id
+        }
+    ' "$file" 2>/dev/null | while read -r line; do
+        local cmd
+        cmd=$(echo "$line" | jq -r '.command // empty')
+        
+        if [[ -z "$cmd" ]]; then
+            continue
+        fi
+        
+        # Apply command filter
+        if [[ -n "$COMMAND_FILTER" ]] && ! echo "$cmd" | grep -qE "$COMMAND_FILTER"; then
+            continue
+        fi
+        
+        local timestamp
+        timestamp=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file")
+        
+        if [[ "$timestamp" -lt "$SINCE" ]]; then
+            continue
+        fi
+        
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            printf '{"session":"%s","command":"%s","timestamp":%d}\n' \
+                "$session_id" \
+                "$(echo "$cmd" | jq -Rs '.' | sed 's/^"//;s/"$//')" \
+                "$timestamp"
+        else
+            local time_str
+            time_str=$(date -r "$timestamp" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || date -d "@$timestamp" "+%Y-%m-%d %H:%M:%S")
+            # Truncate long commands
+            local display_cmd="$cmd"
+            if [[ ${#cmd} -gt 120 ]]; then
+                display_cmd="${cmd:0:117}..."
+            fi
+            printf "[%s] %s\n  └─ %s\n" "$time_str" "${session_id:0:8}..." "$display_cmd"
+        fi
+    done
+}
+
+main() {
+    local output=""
+    local extract_fn="extract_exec_calls"
+    
+    # Use jq-based extraction if available
+    if command -v jq &>/dev/null; then
+        extract_fn="extract_exec_calls_jq"
+    fi
+    
+    # Find all session files
+    local session_files
+    if [[ -n "$SESSION_FILTER" ]]; then
+        session_files=$(find "$SESSIONS_DIR" -name "*${SESSION_FILTER}*.jsonl" -type f 2>/dev/null)
+    else
+        session_files=$(find "$SESSIONS_DIR" -name "*.jsonl" -type f 2>/dev/null)
+    fi
+    
+    if [[ -z "$session_files" ]]; then
+        echo "No session files found in $SESSIONS_DIR" >&2
+        exit 1
+    fi
+    
+    # Process each file
+    while IFS= read -r file; do
+        $extract_fn "$file"
+    done <<< "$session_files" | tail -n "$TAIL_COUNT"
+}
+
+# Watch mode
+if [[ "$WATCH_MODE" == "true" ]]; then
+    echo "Watching for new exec calls... (Ctrl+C to stop)"
+    # Initial run
+    main
+    echo "---"
+    # Watch for changes (simplified - just re-run every 5s)
+    while true; do
+        sleep 5
+        main 2>/dev/null | tail -5
+    done
+else
+    if [[ -n "$OUTPUT_FILE" ]]; then
+        main > "$OUTPUT_FILE"
+        echo "Written to $OUTPUT_FILE"
+    else
+        main
+    fi
+fi
