@@ -1,9 +1,9 @@
 # OpenClaw Deployment Guide
 ## Secure Setup on a Dedicated Mac mini
 
-**Version:** 1.7  
+**Version:** 1.8  
 **Date:** February 2026  
-**Changelog:** v1.7 adds account separation (admin/standard user) for defense in depth  
+**Changelog:** v1.8 adds exec command audit logging with Filebeat/SIEM integration and Sigma detection rules  
 **Audience:** Semi-technical users setting up a personal AI assistant
 
 ---
@@ -1913,6 +1913,28 @@ filebeat.inputs:
     fields:
       log_type: firewall
 
+  # OpenClaw exec audit logs (JSONL)
+  - type: log
+    enabled: true
+    paths:
+      - /Users/*/.openclaw/logs/exec-audit-*.json
+    json.keys_under_root: true
+    json.add_error_key: true
+    fields:
+      log_type: openclaw-exec
+      host_role: gateway
+
+  # OpenClaw command logs
+  - type: log
+    enabled: true
+    paths:
+      - /Users/*/.openclaw/logs/commands.log
+    json.keys_under_root: true
+    json.add_error_key: true
+    fields:
+      log_type: openclaw-commands
+      host_role: gateway
+
 output.elasticsearch:
   hosts: ["https://security-onion.local:9200"]
   username: "filebeat"
@@ -1923,6 +1945,149 @@ processors:
   - add_host_metadata: ~
   - add_cloud_metadata: ~
 ```
+
+---
+
+## Exec Command Audit Logging
+
+OpenClaw's AI can execute shell commands via the `exec` tool. For security and compliance, you should audit all commands executed.
+
+### The Problem
+
+Currently, OpenClaw logs tool executions in:
+- **Debug logs** — Show `tool=exec` but not the command string
+- **Session transcripts** — Full details but buried in JSONL files
+
+There's no real-time hook for tool execution (feature request: [#7597](https://github.com/openclaw/openclaw/issues/7597)).
+
+### Solution: exec-audit Script
+
+Install a script to extract exec commands from session transcripts:
+
+```bash
+# Download and install
+curl -o ~/.local/bin/exec-audit https://raw.githubusercontent.com/er587/osaps/main/scripts/exec-audit
+chmod +x ~/.local/bin/exec-audit
+```
+
+Or create `~/.local/bin/exec-audit`:
+
+```bash
+#!/usr/bin/env bash
+# exec-audit - Extract exec commands from OpenClaw session transcripts
+# Usage: exec-audit [--all] [--days N] [--json] [--tail N]
+
+set -euo pipefail
+
+SESSIONS_DIR="${OPENCLAW_SESSIONS:-$HOME/.openclaw/agents}"
+DAYS="${2:-1}"
+JSON_OUTPUT=false
+TAIL_COUNT=50
+
+[[ "${1:-}" == "--all" ]] && DAYS=9999
+[[ "${1:-}" == "--json" ]] && JSON_OUTPUT=true
+[[ "${1:-}" == "--days" ]] && DAYS="${2:-7}"
+
+# Find all session files and extract exec commands
+find "$SESSIONS_DIR" -name "*.jsonl" -type f -mtime -"$DAYS" 2>/dev/null | while read -r file; do
+    session_id=$(basename "$file" .jsonl)
+    
+    jq -c '
+        select(.message.content != null) |
+        .message.content[] |
+        select(.type == "toolCall" and .name == "exec") |
+        {command: .arguments.command, id: .id}
+    ' "$file" 2>/dev/null | while read -r line; do
+        cmd=$(echo "$line" | jq -r '.command // empty')
+        [[ -z "$cmd" ]] && continue
+        
+        timestamp=$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file")
+        
+        if [[ "$JSON_OUTPUT" == "true" ]]; then
+            printf '{"session":"%s","command":%s,"timestamp":%d}\n' \
+                "$session_id" "$(echo "$cmd" | jq -Rs '.')" "$timestamp"
+        else
+            time_str=$(date -r "$timestamp" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            printf "[%s] %s\n  └─ %s\n" "$time_str" "${session_id:0:8}..." "${cmd:0:100}"
+        fi
+    done
+done | tail -n "$TAIL_COUNT"
+```
+
+### Generate Daily Audit Logs
+
+Create a cron job to generate daily exec audit logs:
+
+```bash
+# Add to crontab (crontab -e)
+0 0 * * * ~/.local/bin/exec-audit --all --json > ~/.openclaw/logs/exec-audit-$(date +\%Y-\%m-\%d).json
+```
+
+Or use a launchd plist on macOS (`~/Library/LaunchAgents/com.openclaw.exec-audit.plist`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" 
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.openclaw.exec-audit</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>~/.local/bin/exec-audit --all --json > ~/.openclaw/logs/exec-audit-$(date +%Y-%m-%d).json</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>0</integer>
+        <key>Minute</key>
+        <integer>5</integer>
+    </dict>
+</dict>
+</plist>
+```
+
+Load it:
+```bash
+launchctl load ~/Library/LaunchAgents/com.openclaw.exec-audit.plist
+```
+
+### Exec Audit Log Format
+
+Each line is a JSON object:
+
+```json
+{"session":"0d4e8a26-fa17-44c9-abba-04de7e103cfd","command":"curl -s https://api.example.com","timestamp":1770078675}
+```
+
+Fields:
+- `session` — Session ID where command was executed
+- `command` — Full command string
+- `timestamp` — Unix timestamp
+
+### Usage Examples
+
+```bash
+# View last 24 hours
+exec-audit
+
+# View all time
+exec-audit --all
+
+# Last 7 days, JSON output
+exec-audit --days 7 --json
+
+# Search for specific commands
+exec-audit --all | grep -i "curl\|wget"
+
+# Count commands by type
+exec-audit --all --json | jq -r '.command' | cut -d' ' -f1 | sort | uniq -c | sort -rn
+```
+
+---
 
 ### OpenClaw-Specific Detections
 
@@ -1986,6 +2151,119 @@ level: medium
 tags:
     - attack.exfiltration
     - attack.t1041
+```
+
+**`/opt/so/rules/sigma/openclaw-exec-audit-dangerous.yml`:**
+
+```yaml
+title: OpenClaw Dangerous Exec Command (Audit Log)
+id: c3d4e5f6-a7b8-9012-cdef-234567890123
+status: experimental
+description: Detects dangerous commands in OpenClaw exec audit logs
+author: Eric (a network security professional)
+logsource:
+    product: openclaw
+    service: exec-audit
+detection:
+    selection_destructive:
+        log_type: openclaw-exec
+        command|contains:
+            - 'rm -rf'
+            - 'rm -r /'
+            - 'mkfs'
+            - 'dd if='
+            - '> /dev/'
+    selection_download_exec:
+        log_type: openclaw-exec
+        command|re: 'curl.*\|.*(bash|sh|python)|wget.*\|.*(bash|sh|python)'
+    selection_reverse_shell:
+        log_type: openclaw-exec
+        command|contains:
+            - 'nc -e'
+            - 'bash -i >&'
+            - '/dev/tcp/'
+            - 'python -c.*socket'
+            - 'perl -e.*socket'
+    selection_credential_access:
+        log_type: openclaw-exec
+        command|contains:
+            - '/etc/passwd'
+            - '/etc/shadow'
+            - '.ssh/id_'
+            - 'aws configure'
+            - '.netrc'
+            - '.pgpass'
+    selection_persistence:
+        log_type: openclaw-exec
+        command|contains:
+            - 'crontab'
+            - 'launchctl'
+            - 'systemctl enable'
+            - '.bashrc'
+            - '.zshrc'
+            - '/etc/rc.local'
+    condition: selection_destructive or selection_download_exec or selection_reverse_shell or selection_credential_access or selection_persistence
+falsepositives:
+    - Legitimate system administration
+    - Backup scripts
+level: high
+tags:
+    - attack.execution
+    - attack.t1059.004
+    - attack.persistence
+    - attack.t1053
+    - attack.credential_access
+    - attack.t1552
+```
+
+**`/opt/so/rules/sigma/openclaw-exec-audit-recon.yml`:**
+
+```yaml
+title: OpenClaw Reconnaissance Commands (Audit Log)
+id: d4e5f6a7-b8c9-0123-def0-345678901234
+status: experimental
+description: Detects reconnaissance activity via OpenClaw exec audit logs
+author: Eric (a network security professional)
+logsource:
+    product: openclaw
+    service: exec-audit
+detection:
+    selection_network_recon:
+        log_type: openclaw-exec
+        command|contains:
+            - 'nmap'
+            - 'masscan'
+            - 'netstat'
+            - 'ss -'
+            - 'lsof -i'
+            - 'tcpdump'
+    selection_system_enum:
+        log_type: openclaw-exec
+        command|contains:
+            - 'whoami'
+            - 'id'
+            - 'uname -a'
+            - 'cat /etc/os-release'
+            - 'systemctl list'
+            - 'ps aux'
+    selection_file_enum:
+        log_type: openclaw-exec
+        command|contains:
+            - 'find / -perm'
+            - 'find / -user'
+            - 'find / -name "*.key"'
+            - 'find / -name "*.pem"'
+            - 'locate password'
+    condition: selection_network_recon or selection_system_enum or selection_file_enum
+falsepositives:
+    - Legitimate troubleshooting
+    - Monitoring scripts
+level: medium
+tags:
+    - attack.discovery
+    - attack.t1082
+    - attack.t1083
+    - attack.t1046
 ```
 
 ### Kibana Dashboard for OpenClaw
