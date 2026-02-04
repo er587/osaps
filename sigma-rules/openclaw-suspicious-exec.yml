@@ -1,0 +1,30 @@
+title: OpenClaw Suspicious Command Execution
+id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+status: experimental
+description: Detects potentially dangerous commands executed via OpenClaw
+author: Eric (a network security professional)
+date: 2026/02/02
+references:
+    - https://github.com/er587/osaps
+    - https://attack.mitre.org/techniques/T1059/
+logsource:
+    product: openclaw
+    service: gateway
+detection:
+    selection:
+        log_type: openclaw
+        message|contains:
+            - 'rm -rf'
+            - 'curl | bash'
+            - 'wget | sh'
+            - '/etc/passwd'
+            - 'chmod 777'
+            - 'nc -e'
+            - 'reverse shell'
+    condition: selection
+falsepositives:
+    - Legitimate administrative commands
+level: high
+tags:
+    - attack.execution
+    - attack.t1059

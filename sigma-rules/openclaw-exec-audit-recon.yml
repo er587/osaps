@@ -1,0 +1,49 @@
+title: OpenClaw Reconnaissance Commands (Audit Log)
+id: d4e5f6a7-b8c9-0123-def0-345678901234
+status: experimental
+description: Detects reconnaissance activity via OpenClaw exec audit logs
+author: Eric (a network security professional)
+date: 2026/02/02
+references:
+    - https://github.com/er587/osaps
+    - https://attack.mitre.org/techniques/T1082/
+logsource:
+    product: openclaw
+    service: exec-audit
+detection:
+    selection_network_recon:
+        log_type: openclaw-exec
+        command|contains:
+            - 'nmap'
+            - 'masscan'
+            - 'netstat'
+            - 'ss -'
+            - 'lsof -i'
+            - 'tcpdump'
+    selection_system_enum:
+        log_type: openclaw-exec
+        command|contains:
+            - 'whoami'
+            - 'id'
+            - 'uname -a'
+            - 'cat /etc/os-release'
+            - 'systemctl list'
+            - 'ps aux'
+    selection_file_enum:
+        log_type: openclaw-exec
+        command|contains:
+            - 'find / -perm'
+            - 'find / -user'
+            - 'find / -name "*.key"'
+            - 'find / -name "*.pem"'
+            - 'locate password'
+    condition: selection_network_recon or selection_system_enum or selection_file_enum
+falsepositives:
+    - Legitimate troubleshooting
+    - Monitoring scripts
+level: medium
+tags:
+    - attack.discovery
+    - attack.t1082
+    - attack.t1083
+    - attack.t1046

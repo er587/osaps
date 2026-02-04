@@ -1,0 +1,28 @@
+title: OpenClaw Potential Data Exfiltration
+id: b2c3d4e5-f6a7-8901-bcde-f12345678901
+status: experimental
+description: Detects potential data exfiltration attempts via OpenClaw
+author: Eric (a network security professional)
+date: 2026/02/02
+references:
+    - https://github.com/er587/osaps
+    - https://attack.mitre.org/techniques/T1041/
+logsource:
+    product: openclaw
+    service: gateway
+detection:
+    selection:
+        log_type: openclaw
+        message|contains:
+            - 'curl -X POST'
+            - 'webhook'
+            - 'pastebin'
+            - 'transfer.sh'
+            - 'file.io'
+    condition: selection
+falsepositives:
+    - Legitimate API integrations
+level: medium
+tags:
+    - attack.exfiltration
+    - attack.t1041

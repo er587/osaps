@@ -1,0 +1,62 @@
+title: OpenClaw Dangerous Exec Command (Audit Log)
+id: c3d4e5f6-a7b8-9012-cdef-234567890123
+status: experimental
+description: Detects dangerous commands in OpenClaw exec audit logs
+author: Eric (a network security professional)
+date: 2026/02/02
+references:
+    - https://github.com/er587/osaps
+    - https://attack.mitre.org/techniques/T1059/004/
+logsource:
+    product: openclaw
+    service: exec-audit
+detection:
+    selection_destructive:
+        log_type: openclaw-exec
+        command|contains:
+            - 'rm -rf'
+            - 'rm -r /'
+            - 'mkfs'
+            - 'dd if='
+            - '> /dev/'
+    selection_download_exec:
+        log_type: openclaw-exec
+        command|re: 'curl.*\|.*(bash|sh|python)|wget.*\|.*(bash|sh|python)'
+    selection_reverse_shell:
+        log_type: openclaw-exec
+        command|contains:
+            - 'nc -e'
+            - 'bash -i >&'
+            - '/dev/tcp/'
+            - 'python -c.*socket'
+            - 'perl -e.*socket'
+    selection_credential_access:
+        log_type: openclaw-exec
+        command|contains:
+            - '/etc/passwd'
+            - '/etc/shadow'
+            - '.ssh/id_'
+            - 'aws configure'
+            - '.netrc'
+            - '.pgpass'
+    selection_persistence:
+        log_type: openclaw-exec
+        command|contains:
+            - 'crontab'
+            - 'launchctl'
+            - 'systemctl enable'
+            - '.bashrc'
+            - '.zshrc'
+            - '/etc/rc.local'
+    condition: selection_destructive or selection_download_exec or selection_reverse_shell or selection_credential_access or selection_persistence
+falsepositives:
+    - Legitimate system administration
+    - Backup scripts
+level: high
+tags:
+    - attack.execution
+    - attack.t1059.004
+    - attack.persistence
+    - attack.t1053
+    - attack.credential_access
+    - attack.t1552
