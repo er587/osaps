@@ -15,6 +15,24 @@ This repository contains a detailed guide for deploying OpenClaw — a self-host
 
 ## What's Included
 
+### 🛡️ [Guardrails Templates](./guardrails/)
+
+Behavioral security boundaries for AI assistants:
+
+- **Trust models** — Define who can instruct your AI
+- **Operational policies** — Autonomous vs. approval-required actions
+- **Prompt injection defense** — 50+ attack patterns in 10+ languages
+- **Email/calendar/dev rules** — Domain-specific guardrails
+
+### 🔍 [Sigma Detection Rules](./sigma-rules/)
+
+SIEM detection rules for Security Onion, Splunk, and Elasticsearch:
+
+- **Dangerous command execution** — Reverse shells, credential access
+- **Data exfiltration patterns** — Pastebin, webhooks, paste services
+- **Reconnaissance activity** — System enumeration, network scanning
+- **Credential theft** — API key exposure, secret file access
+
 ### 📘 [OpenClaw Deployment Guide](./openclaw-deployment-guide.md)
 
 A step-by-step guide covering:
